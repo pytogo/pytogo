@@ -1,4 +1,4 @@
-package internal_portforward
+package portforward
 
 import (
 	"bytes"
