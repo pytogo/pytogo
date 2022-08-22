@@ -70,7 +70,7 @@ func StopForwarding(namespace, pod string) {
 // ===== Port forwarding =====
 
 // Forward connects to a Pod and tunnels traffic from a local port to this pod.
-func Forward(namespace, podName string, fromPort, toPort int, configPath string) error {
+func Forward(namespace, podName string, fromPort, toPort int, configPath string, verbose bool) error {
 	// Based on example https://github.com/kubernetes/client-go/issues/51#issuecomment-436200428
 
 	// CONFIG
@@ -103,7 +103,7 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string)
 
 	ports := fmt.Sprintf("%d:%d", fromPort, toPort)
 
-	if err := startForward(dialer, ports, stopChan, readyChan); err != nil {
+	if err := startForward(dialer, ports, stopChan, readyChan, verbose); err != nil {
 		return err
 	}
 
@@ -162,7 +162,7 @@ func newDialer(config *rest.Config, namespace, podName string) (httpstream.Diale
 }
 
 // startForward runs the port-forwarding.
-func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan chan struct{}) error {
+func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan chan struct{}, verbose bool) error {
 	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
 
 	forwarder, err := portforward.New(dialer, []string{ports}, stopChan, readyChan, out, errOut)
@@ -176,7 +176,7 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 		}
 		if len(errOut.String()) != 0 {
 			panic(errOut.String())
-		} else if len(out.String()) != 0 {
+		} else if len(out.String()) != 0 && verbose {
 			fmt.Println(out.String())
 		}
 	}()
@@ -204,4 +204,3 @@ func closeOnSigterm(namespace, podName string) {
 		StopForwarding(namespace, podName)
 	}()
 }
-
