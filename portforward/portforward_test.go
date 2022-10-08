@@ -45,7 +45,7 @@ func TestForwardWithoutValidConfigPath(t *testing.T) {
 	invalidPath := "foo/bar"
 
 	// Act
-	err := Forward(namespace, pod, from, to, invalidPath, false)
+	err := Forward(namespace, pod, from, to, invalidPath, Debug)
 
 	// Assert
 	if err == nil {

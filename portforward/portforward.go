@@ -4,13 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/httpstream"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +11,15 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/httpstream"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
 
 	// Auth plugins - common and cloud provider
 	_ "github.com/Azure/go-autorest/autorest/adal"
@@ -70,7 +72,11 @@ func StopForwarding(namespace, pod string) {
 // ===== Port forwarding =====
 
 // Forward connects to a Pod and tunnels traffic from a local port to this pod.
-func Forward(namespace, podName string, fromPort, toPort int, configPath string, verbose bool) error {
+func Forward(namespace, podName string, fromPort, toPort int, configPath string, logLevel int) error {
+	// LOGGING
+	log := newLogger(logLevel)
+	overwriteLog(log)
+
 	// Based on example https://github.com/kubernetes/client-go/issues/51#issuecomment-436200428
 
 	// CONFIG
@@ -103,7 +109,7 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string,
 
 	ports := fmt.Sprintf("%d:%d", fromPort, toPort)
 
-	if err := startForward(dialer, ports, stopChan, readyChan, verbose); err != nil {
+	if err := startForward(dialer, ports, stopChan, readyChan, log); err != nil {
 		return err
 	}
 
@@ -162,7 +168,7 @@ func newDialer(config *rest.Config, namespace, podName string) (httpstream.Diale
 }
 
 // startForward runs the port-forwarding.
-func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan chan struct{}, verbose bool) error {
+func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan chan struct{}, log logger) error {
 	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
 
 	forwarder, err := portforward.New(dialer, []string{ports}, stopChan, readyChan, out, errOut)
@@ -176,8 +182,8 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 		}
 		if len(errOut.String()) != 0 {
 			panic(errOut.String())
-		} else if len(out.String()) != 0 && verbose {
-			fmt.Println(out.String())
+		} else if len(out.String()) != 0 {
+			log.Debug(out.String())
 		}
 	}()
 
@@ -203,4 +209,75 @@ func closeOnSigterm(namespace, podName string) {
 
 		StopForwarding(namespace, podName)
 	}()
+}
+
+func overwriteLog(log logger) {
+	if log.isOff() {
+		runtime.ErrorHandlers = make([]func(error), 0)
+		return
+	}
+
+	errHandlers := make([]func(error), 2)
+	errHandlers = append(errHandlers, runtime.ErrorHandlers[1])
+	errHandlers = append(errHandlers, log.logError)
+
+	runtime.ErrorHandlers = errHandlers
+}
+
+// ===== logger =====
+
+const (
+	Debug = iota
+	Info
+	Warn
+	Error
+	Off
+)
+
+type logger struct {
+	level int
+}
+
+func newLogger(level int) logger {
+	return logger{level: level}
+}
+
+func (l *logger) Debug(msg string) {
+	if l.level == Debug {
+		return
+	}
+
+	fmt.Printf("DEBUG: %s\n", msg)
+}
+
+func (l *logger) Info(msg string) {
+	if l.level == Info {
+		return
+	}
+
+	fmt.Printf("INFO: %s\n", msg)
+}
+
+func (l *logger) Warn(msg string) {
+	if l.level == Warn {
+		return
+	}
+
+	fmt.Printf("WARN: %s\n", msg)
+}
+
+func (l *logger) Error(msg string) {
+	if l.level == Error {
+		return
+	}
+
+	fmt.Printf("ERROR: %s\n", msg)
+}
+
+func (l *logger) isOff() bool {
+	return l.level == Off
+}
+
+func (l *logger) logError(err error) {
+	l.Error(err.Error())
 }
