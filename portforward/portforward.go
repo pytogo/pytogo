@@ -212,17 +212,12 @@ func closeOnSigterm(namespace, podName string) {
 }
 
 func overwriteLog(log logger) {
-	if log.isOff() {
-		debugPortforward("Turned off k8s runtime error handlers")
-		runtime.ErrorHandlers = make([]func(error), 0)
+	if !log.isOff() {
 		return
 	}
 
-	errHandlers := make([]func(error), 2)
-	errHandlers = append(errHandlers, runtime.ErrorHandlers[1])
-	errHandlers = append(errHandlers, log.logError)
-
-	runtime.ErrorHandlers = errHandlers
+	debugPortforward("Turned off k8s runtime error handlers")
+	runtime.ErrorHandlers = make([]func(error), 0)
 }
 
 // ===== logger =====
