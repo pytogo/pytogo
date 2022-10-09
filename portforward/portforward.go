@@ -243,7 +243,7 @@ func newLogger(level int) logger {
 }
 
 func (l *logger) Debug(msg string) {
-	if l.level == Debug {
+	if l.level > Debug {
 		return
 	}
 
@@ -251,7 +251,7 @@ func (l *logger) Debug(msg string) {
 }
 
 func (l *logger) Info(msg string) {
-	if l.level == Info {
+	if l.level > Info {
 		return
 	}
 
@@ -259,7 +259,7 @@ func (l *logger) Info(msg string) {
 }
 
 func (l *logger) Warn(msg string) {
-	if l.level == Warn {
+	if l.level > Warn {
 		return
 	}
 
@@ -267,7 +267,7 @@ func (l *logger) Warn(msg string) {
 }
 
 func (l *logger) Error(msg string) {
-	if l.level == Error {
+	if l.level > Error {
 		return
 	}
 
