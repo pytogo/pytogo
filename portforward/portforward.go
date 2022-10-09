@@ -213,6 +213,7 @@ func closeOnSigterm(namespace, podName string) {
 
 func overwriteLog(log logger) {
 	if log.isOff() {
+		debugPortforward("Turned off k8s runtime error handlers")
 		runtime.ErrorHandlers = make([]func(error), 0)
 		return
 	}
@@ -239,6 +240,7 @@ type logger struct {
 }
 
 func newLogger(level int) logger {
+	debugPortforward(fmt.Sprintf("level=%d", level))
 	return logger{level: level}
 }
 
@@ -280,4 +282,10 @@ func (l *logger) isOff() bool {
 
 func (l *logger) logError(err error) {
 	l.Error(err.Error())
+}
+
+func debugPortforward(msg string) {
+	if os.Getenv("PORTFORWARD_DEBUG") == "YES" {
+		fmt.Println(msg)
+	}
 }
