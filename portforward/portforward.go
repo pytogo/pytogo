@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
@@ -72,7 +73,7 @@ func StopForwarding(namespace, pod string) {
 // ===== Port forwarding =====
 
 // Forward connects to a Pod and tunnels traffic from a local port to this pod.
-func Forward(namespace, podName string, fromPort, toPort int, configPath string, logLevel int) error {
+func Forward(namespace, podName string, fromPort, toPort int, configPath string, logLevel int, kubeContext string) error {
 	// LOGGING
 	log := newLogger(logLevel)
 	overwriteLog(log)
@@ -82,7 +83,7 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string,
 	// CONFIG
 	var config *rest.Config
 
-	if c, err := loadConfig(configPath); err != nil {
+	if c, err := loadConfig(configPath, kubeContext, log); err != nil {
 		return err
 	} else {
 		config = c
@@ -121,8 +122,22 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string,
 }
 
 // loadConfig fetches the config from .kube config folder inside the home dir.
-func loadConfig(configPath string) (*rest.Config, error) {
-	config, err := clientcmd.BuildConfigFromFlags("", configPath)
+func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Config, error) {
+	var configOverrides *clientcmd.ConfigOverrides
+
+	if kubeContext != "" {
+		log.Debug("Override kube context with " + kubeContext)
+		configOverrides = &clientcmd.ConfigOverrides{
+			ClusterInfo: clientcmdapi.Cluster{Server: ""}, CurrentContext: kubeContext,
+		}
+	} else {
+		configOverrides = &clientcmd.ConfigOverrides{ClusterInfo: clientcmdapi.Cluster{Server: ""}}
+	}
+
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
+		configOverrides).ClientConfig()
+
 	if err != nil {
 		return nil, err
 	}
