@@ -44,8 +44,8 @@ var (
 )
 
 // registerForwarding adds a forwarding to the active forwards.
-func registerForwarding(namespace, pod string, stopCh chan struct{}) {
-	key := fmt.Sprintf("%s/%s", namespace, pod)
+func registerForwarding(namespace, podOrService string, stopCh chan struct{}) {
+	key := fmt.Sprintf("%s/%s", namespace, podOrService)
 
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -58,8 +58,8 @@ func registerForwarding(namespace, pod string, stopCh chan struct{}) {
 }
 
 // StopForwarding closes a port forwarding.
-func StopForwarding(namespace, pod string) {
-	key := fmt.Sprintf("%s/%s", namespace, pod)
+func StopForwarding(namespace, podOrService string) {
+	key := fmt.Sprintf("%s/%s", namespace, podOrService)
 
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -72,8 +72,8 @@ func StopForwarding(namespace, pod string) {
 
 // ===== Port forwarding =====
 
-// Forward connects to a Pod and tunnels traffic from a local port to this pod.
-func Forward(namespace, podName string, fromPort, toPort int, configPath string, logLevel int, kubeContext string) error {
+// Forward connects to a pod/service and tunnels traffic from a local port to this pod.
+func Forward(namespace, podOrService string, fromPort, toPort int, configPath string, logLevel int, kubeContext string) error {
 	// LOGGING
 	log := newLogger(logLevel)
 	overwriteLog(log)
@@ -91,15 +91,15 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string,
 
 	// CHECK
 	// PortForward must be started in a go-routine, therefore we have
-	// to check manually if the pod exists and is reachable.
-	if err := checkPodExistence(config, namespace, podName); err != nil {
+	// to check manually if the pod or service exists and is reachable.
+	if err := checkResExistence(config, namespace, podOrService); err != nil {
 		return err
 	}
 
 	// DIALER
 	var dialer httpstream.Dialer
 
-	if d, err := newDialer(config, namespace, podName); err != nil {
+	if d, err := newDialer(config, namespace, podOrService); err != nil {
 		return err
 	} else {
 		dialer = d
@@ -115,8 +115,8 @@ func Forward(namespace, podName string, fromPort, toPort int, configPath string,
 	}
 
 	// HANDLE CLOSING
-	registerForwarding(namespace, podName, stopChan)
-	closeOnSigterm(namespace, podName)
+	registerForwarding(namespace, podOrService, stopChan)
+	closeOnSigterm(namespace, podOrService)
 
 	return nil
 }
@@ -145,13 +145,14 @@ func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Co
 	return config, nil
 }
 
-func checkPodExistence(config *rest.Config, namespace, podName string) error {
+// / checkResExistence checks whether a pod or service exists
+func checkResExistence(config *rest.Config, namespace, podOrService string) error {
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
 	}
 
-	_, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podName, metav1.GetOptions{})
+	_, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -160,13 +161,13 @@ func checkPodExistence(config *rest.Config, namespace, podName string) error {
 }
 
 // newDialer creates a dialer that connects to the pod.
-func newDialer(config *rest.Config, namespace, podName string) (httpstream.Dialer, error) {
+func newDialer(config *rest.Config, namespace, podOrService string) (httpstream.Dialer, error) {
 	roundTripper, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, podName)
+	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, podOrService)
 	hostIP := strings.TrimLeft(config.Host, "https://")
 
 	// When there is a "/" in the hostIP, it contains also a path
@@ -213,7 +214,7 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 }
 
 // closeOnSigterm cares about closing a channel when the OS sends a SIGTERM.
-func closeOnSigterm(namespace, podName string) {
+func closeOnSigterm(namespace, podOrService string) {
 	sigs := make(chan os.Signal, 1)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -222,7 +223,7 @@ func closeOnSigterm(namespace, podName string) {
 		// Received kill signal
 		<-sigs
 
-		StopForwarding(namespace, podName)
+		StopForwarding(namespace, podOrService)
 	}()
 }
 
