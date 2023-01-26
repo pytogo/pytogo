@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"net/http"
 	"net/url"
 	"os"
@@ -149,21 +150,22 @@ func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Co
 
 // getPod returns a pod for a pod name or look up a pod that belongs to a service
 func getPod(config *rest.Config, namespace, podOrService string, log logger) (*v1.Pod, error) {
-	var pod *v1.Pod
-
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check for pods
-	pod, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
 	if err != nil {
-		return nil, err
+		// In case the pod was not found, we want to check next if a service with this name exists.
+		if !strings.Contains(err.Error(), "not found") {
+			return nil, err
+		}
 	}
 
-	if pod != nil {
-		err = waitTillReady(clientset, pod, log)
+	if pod != nil && pod.Name != "" && pod.Namespace != "" {
+		pod, err = waitTillReady(clientset, pod, log)
 		if err != nil {
 			return nil, err
 		}
@@ -171,15 +173,25 @@ func getPod(config *rest.Config, namespace, podOrService string, log logger) (*v
 	}
 
 	// Check for services
-	_, err = clientset.CoreV1().Services(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
+	service, err := clientset.CoreV1().Services(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	return pod, nil
+	pod, err = searchPodForSvc(clientset, service)
+	if err != nil {
+		return nil, err
+	}
+
+	if pod == nil || pod.Name == "" || pod.Namespace == "" {
+		msg := fmt.Sprintf("no pod or service with name %s found", podOrService)
+		return nil, errors.New(msg)
+	}
+
+	return waitTillReady(clientset, pod, log)
 }
 
-func waitTillReady(clientset *kubernetes.Clientset, pod *v1.Pod, log logger) error {
+func waitTillReady(clientset *kubernetes.Clientset, pod *v1.Pod, log logger) (*v1.Pod, error) {
 	var err error
 
 	ns := pod.Namespace
@@ -189,7 +201,7 @@ func waitTillReady(clientset *kubernetes.Clientset, pod *v1.Pod, log logger) err
 		status, ok := isPodReady(pod)
 
 		if ok {
-			return nil
+			return pod, nil
 		}
 
 		msg := fmt.Sprintf("Wait 10 seconds for pod %s to become ready (current status %s)", pod.Name, status)
@@ -199,11 +211,31 @@ func waitTillReady(clientset *kubernetes.Clientset, pod *v1.Pod, log logger) err
 		pod, err = clientset.CoreV1().Pods(ns).Get(context.Background(), n, metav1.GetOptions{})
 
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return errors.New("pod did not become ready in time")
+	return nil, errors.New("pod did not become ready in time")
+}
+
+func searchPodForSvc(clientset *kubernetes.Clientset, service *v1.Service) (*v1.Pod, error) {
+	selector := labels.SelectorFromSet(service.Spec.Selector)
+
+	options := metav1.ListOptions{LabelSelector: selector.String()}
+
+	podList, err := clientset.CoreV1().Pods(service.Namespace).List(context.Background(), options)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pod := range podList.Items {
+		if _, ok := isPodReady(&pod); ok {
+			return &pod, nil
+		}
+	}
+
+	msg := fmt.Sprintf("no pod available for service %s", service.Name)
+	return nil, errors.New(msg)
 }
 
 // newDialer creates a dialer that connects to the pod.
