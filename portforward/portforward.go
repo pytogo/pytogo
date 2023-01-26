@@ -3,6 +3,7 @@ package portforward
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -81,28 +82,27 @@ func Forward(namespace, podOrService string, fromPort, toPort int, configPath st
 	// Based on example https://github.com/kubernetes/client-go/issues/51#issuecomment-436200428
 
 	// CONFIG
-	var config *rest.Config
+	config, err := loadConfig(configPath, kubeContext, log)
 
-	if c, err := loadConfig(configPath, kubeContext, log); err != nil {
+	if err != nil {
 		return err
-	} else {
-		config = c
 	}
 
-	// CHECK
+	// PREPARE
+	// Check & prepare name
 	// PortForward must be started in a go-routine, therefore we have
 	// to check manually if the pod or service exists and is reachable.
-	if err := checkResExistence(config, namespace, podOrService); err != nil {
+	resType, err := prepareForward(config, namespace, podOrService)
+
+	if err != nil {
 		return err
 	}
 
 	// DIALER
-	var dialer httpstream.Dialer
+	dialer, err := newDialer(config, namespace, resType, podOrService)
 
-	if d, err := newDialer(config, namespace, podOrService); err != nil {
+	if err != nil {
 		return err
-	} else {
-		dialer = d
 	}
 
 	// PORT FORWARD
@@ -145,29 +145,48 @@ func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Co
 	return config, nil
 }
 
-// / checkResExistence checks whether a pod or service exists
-func checkResExistence(config *rest.Config, namespace, podOrService string) error {
+// prepareForward checks whether a pod or service exists and prefixes the resource name.
+// (e.g. pod name "web" becomes "pods/web" or the service "db" becomes "services/db".)
+func prepareForward(config *rest.Config, namespace, podOrService string) (string, error) {
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return err
+		return "", err
+	}
+
+	_, err = clientset.CoreV1().Services(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
+	if err != nil {
+		// We return only errors that NOT represent a "not-found" error
+		if !strings.Contains(err.Error(), "not found") {
+			return "", err
+		}
+	} else {
+		return "services", nil
 	}
 
 	_, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
 	if err != nil {
-		return err
+		// We return only errors that NOT represent a "not-found" error
+		if !strings.Contains(err.Error(), "not found") {
+			return "", err
+		}
+	} else {
+		return "pods", nil
 	}
 
-	return nil
+	msg := fmt.Sprintf("no service or pod with name %s found", podOrService)
+	err = errors.New(msg)
+
+	return "", err
 }
 
 // newDialer creates a dialer that connects to the pod.
-func newDialer(config *rest.Config, namespace, podOrService string) (httpstream.Dialer, error) {
+func newDialer(config *rest.Config, namespace, resType, podOrService string) (httpstream.Dialer, error) {
 	roundTripper, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, podOrService)
+	path := fmt.Sprintf("/api/v1/namespaces/%s/%s/%s/portforward", namespace, resType, podOrService)
 	hostIP := strings.TrimLeft(config.Host, "https://")
 
 	// When there is a "/" in the hostIP, it contains also a path
@@ -214,7 +233,7 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 }
 
 // closeOnSigterm cares about closing a channel when the OS sends a SIGTERM.
-func closeOnSigterm(namespace, podOrService string) {
+func closeOnSigterm(namespace, qualifiedName string) {
 	sigs := make(chan os.Signal, 1)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -223,7 +242,7 @@ func closeOnSigterm(namespace, podOrService string) {
 		// Received kill signal
 		<-sigs
 
-		StopForwarding(namespace, podOrService)
+		StopForwarding(namespace, qualifiedName)
 	}()
 }
 
