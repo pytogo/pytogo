@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	v1 "k8s.io/api/core/v1"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
@@ -92,14 +94,14 @@ func Forward(namespace, podOrService string, fromPort, toPort int, configPath st
 	// Check & prepare name
 	// PortForward must be started in a go-routine, therefore we have
 	// to check manually if the pod or service exists and is reachable.
-	resType, err := prepareForward(config, namespace, podOrService)
+	pod, err := getPod(config, namespace, podOrService, log)
 
 	if err != nil {
 		return err
 	}
 
 	// DIALER
-	dialer, err := newDialer(config, namespace, resType, podOrService)
+	dialer, err := newDialer(config, namespace, pod)
 
 	if err != nil {
 		return err
@@ -110,13 +112,13 @@ func Forward(namespace, podOrService string, fromPort, toPort int, configPath st
 
 	ports := fmt.Sprintf("%d:%d", fromPort, toPort)
 
-	if err := startForward(dialer, ports, stopChan, readyChan, log); err != nil {
+	if err = startForward(dialer, ports, stopChan, readyChan, log); err != nil {
 		return err
 	}
 
 	// HANDLE CLOSING
-	registerForwarding(namespace, podOrService, stopChan)
-	closeOnSigterm(namespace, podOrService)
+	registerForwarding(namespace, pod.Name, stopChan)
+	closeOnSigterm(namespace, pod.Name)
 
 	return nil
 }
@@ -145,48 +147,73 @@ func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Co
 	return config, nil
 }
 
-// prepareForward checks whether a pod or service exists and prefixes the resource name.
-// (e.g. pod name "web" becomes "pods/web" or the service "db" becomes "services/db".)
-func prepareForward(config *rest.Config, namespace, podOrService string) (string, error) {
+// getPod returns a pod for a pod name or look up a pod that belongs to a service
+func getPod(config *rest.Config, namespace, podOrService string, log logger) (*v1.Pod, error) {
+	var pod *v1.Pod
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
+	// Check for pods
+	pod, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	if pod != nil {
+		err = waitTillReady(clientset, pod, log)
+		if err != nil {
+			return nil, err
+		}
+		return pod, nil
+	}
+
+	// Check for services
 	_, err = clientset.CoreV1().Services(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
 	if err != nil {
-		// We return only errors that NOT represent a "not-found" error
-		if !strings.Contains(err.Error(), "not found") {
-			return "", err
-		}
-	} else {
-		return "services", nil
+		return nil, err
 	}
 
-	_, err = clientset.CoreV1().Pods(namespace).Get(context.Background(), podOrService, metav1.GetOptions{})
-	if err != nil {
-		// We return only errors that NOT represent a "not-found" error
-		if !strings.Contains(err.Error(), "not found") {
-			return "", err
+	return pod, nil
+}
+
+func waitTillReady(clientset *kubernetes.Clientset, pod *v1.Pod, log logger) error {
+	var err error
+
+	ns := pod.Namespace
+	n := pod.Name
+
+	for i := 0; i < 6; i++ {
+		status, ok := isPodReady(pod)
+
+		if ok {
+			return nil
 		}
-	} else {
-		return "pods", nil
+
+		msg := fmt.Sprintf("Wait 10 seconds for pod %s to become ready (current status %s)", pod.Name, status)
+		log.Info(msg)
+		time.Sleep(10 * time.Second)
+
+		pod, err = clientset.CoreV1().Pods(ns).Get(context.Background(), n, metav1.GetOptions{})
+
+		if err != nil {
+			return err
+		}
 	}
 
-	msg := fmt.Sprintf("no service or pod with name %s found", podOrService)
-	err = errors.New(msg)
-
-	return "", err
+	return errors.New("pod did not become ready in time")
 }
 
 // newDialer creates a dialer that connects to the pod.
-func newDialer(config *rest.Config, namespace, resType, podOrService string) (httpstream.Dialer, error) {
+func newDialer(config *rest.Config, namespace string, pod *v1.Pod) (httpstream.Dialer, error) {
 	roundTripper, upgrader, err := spdy.RoundTripperFor(config)
 	if err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/api/v1/namespaces/%s/%s/%s/portforward", namespace, resType, podOrService)
+	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, pod.Name)
 	hostIP := strings.TrimLeft(config.Host, "https://")
 
 	// When there is a "/" in the hostIP, it contains also a path
@@ -253,6 +280,24 @@ func overwriteLog(log logger) {
 
 	debugPortforward("Turned off k8s runtime error handlers")
 	runtime.ErrorHandlers = make([]func(error), 0)
+}
+
+func isPodReady(pod *v1.Pod) (string, bool) {
+	podReady := pod.Status.Phase == v1.PodRunning
+
+	if !podReady {
+		return string(pod.Status.Phase), podReady
+	}
+
+	// Check if at least one container is ready:
+	// We have to guess that this must be required one.
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Ready {
+			return "", status.Ready
+		}
+	}
+
+	return "NoContainerReady", false
 }
 
 // ===== logger =====

@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	err := portforward.Forward("test", "nginx-service", 4000, 80, "/Users/sebastianziemann/.kube/config", 0, "")
+	err := portforward.Forward("test", "broken", 4000, 80, "/Users/sebastianziemann/.kube/config", 0, "")
 
 	if err != nil {
 		fmt.Println(err.Error())
