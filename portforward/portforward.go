@@ -125,7 +125,13 @@ func Forward(namespace, podOrService string, fromPort, toPort int, configPath st
 }
 
 // loadConfig fetches the config from .kube config folder inside the home dir.
+// It tries to load in-cluster-config when an empty path was provided.
 func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Config, error) {
+	if kubeconfigPath == "" {
+		log.Debug("An empty config path was provide - will try to use in-cluster-config")
+		return rest.InClusterConfig()
+	}
+
 	var configOverrides *clientcmd.ConfigOverrides
 
 	if kubeContext != "" {
