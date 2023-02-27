@@ -5,8 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +14,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
@@ -95,6 +97,12 @@ func Forward(namespace, podOrService string, fromPort, toPort int, configPath st
 	// Check & prepare name
 	// PortForward must be started in a go-routine, therefore we have
 	// to check manually if the pod or service exists and is reachable.
+	err = checkPort(fromPort, log)
+
+	if err != nil {
+		return err
+	}
+
 	pod, err := getPod(config, namespace, podOrService, log)
 
 	if err != nil {
@@ -152,6 +160,24 @@ func loadConfig(kubeconfigPath string, kubeContext string, log logger) (*rest.Co
 	}
 
 	return config, nil
+}
+
+// checkPort checks if a local port is free.
+func checkPort(port int, log logger) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	// We do not care when closing fails because we do not expect incoming traffic
+	err = l.Close()
+	if err != nil {
+		log.Warn(err.Error())
+	}
+
+	return nil
 }
 
 // getPod returns a pod for a pod name or look up a pod that belongs to a service
@@ -287,14 +313,18 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 		}
 	}()
 
+	errCh := make(chan error, 1)
+
 	// Locks until stopChan is closed.
 	go func() {
 		if err = forwarder.ForwardPorts(); err != nil {
-			panic(err)
+			errCh <- err
 		}
+
+		close(errCh)
 	}()
 
-	return nil
+	return <-errCh
 }
 
 // closeOnSigterm cares about closing a channel when the OS sends a SIGTERM.
