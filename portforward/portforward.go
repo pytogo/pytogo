@@ -320,11 +320,24 @@ func startForward(dialer httpstream.Dialer, ports string, stopChan, readyChan ch
 		if err = forwarder.ForwardPorts(); err != nil {
 			errCh <- err
 		}
+		log.Error(err.Error())
 
 		close(errCh)
 	}()
 
-	return <-errCh
+	// For limited time we will wait if portforward returned an error
+	timer := time.After(100 * time.Millisecond)
+
+	select {
+	case e := <-errCh:
+		err = e
+	case <-timer:
+		msg := "Error listener timeout - nothing happend"
+		log.Debug(msg)
+		err = nil
+	}
+
+	return err
 }
 
 // closeOnSigterm cares about closing a channel when the OS sends a SIGTERM.
