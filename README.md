@@ -1,5 +1,7 @@
 # pytogo
 
+** DEPRECATED - this repo is not used anymore for Python-independent code **
+
 > Central place for Python-independent code
 
 [![Go](https://github.com/pytogo/pytogo/actions/workflows/go.yml/badge.svg)](https://github.com/pytogo/pytogo/actions/workflows/go.yml)
